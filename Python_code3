@@ -1,0 +1,127 @@
+from pyspark import SparkContext, SparkConf
+from pyspark.sql import SparkSession
+import numpy as np
+import pandas as pd
+
+# Initialize Spark
+if 'spark' not in globals() or spark is None:
+    conf = SparkConf().setAppName("StrassenMatrixMultiplicationOptimized")
+    spark = SparkSession.builder.config(conf=conf).getOrCreate()
+    sc = spark.sparkContext
+else:
+    sc = spark.sparkContext
+
+# Helper function for matrix inversion
+def invert_matrix(matrix):
+    try:
+        inv_matrix = np.linalg.inv(matrix)
+        return inv_matrix
+    except np.linalg.LinAlgError:
+        raise ValueError("Matrix is singular and cannot be inverted.")
+
+# Function to split a matrix into quadrants
+def split_matrix(matrix):
+    n = matrix.shape[0]
+    mid = n // 2
+    A11 = matrix[:mid, :mid]
+    A12 = matrix[:mid, mid:]
+    A21 = matrix[mid:, :mid]
+    A22 = matrix[mid:, mid:]
+    return A11, A12, A21, A22
+
+# Threshold below which standard multiplication is used
+THRESHOLD = 128
+
+# Optimized Strassen's Algorithm for matrix multiplication
+def strassen_multiply(A, B): # Remove sc as a parameter
+    n = A.shape[0]
+
+    # Use standard multiplication for small matrices
+    if n <= THRESHOLD:
+        return np.dot(A, B)
+
+    # Ensure both matrices are square and of the same size
+    if A.shape != (n, n) or B.shape != (n, n):
+        raise ValueError("Input matrices must be square and of the same size.")
+
+    # Padding to the next power of 2 if necessary
+    next_power_of_2 = 2**(int(np.ceil(np.log2(n))))
+    original_shape = A.shape
+    if n != next_power_of_2:
+        A_padded = np.zeros((next_power_of_2, next_power_of_2), dtype=A.dtype)
+        B_padded = np.zeros((next_power_of_2, next_power_of_2), dtype=B.dtype)
+        A_padded[:n, :n] = A
+        B_padded[:n, :n] = B
+        A, B = A_padded, B_padded
+
+    A11, A12, A21, A22 = split_matrix(A)
+    B11, B12, B21, B22 = split_matrix(B)
+
+    # Compute Strassen's 7 products recursively
+    M1 = strassen_multiply(A11 + A22, B11 + B22) # Remove sc from recursive calls
+    M2 = strassen_multiply(A21 + A22, B11)
+    M3 = strassen_multiply(A11, B12 - B22)
+    M4 = strassen_multiply(A22, B21 - B11)
+    M5 = strassen_multiply(A11 + A12, B22)
+    M6 = strassen_multiply(A21 - A11, B11 + B12)
+    M7 = strassen_multiply(A12 - A22, B21 + B22)
+
+
+    # Combine results into the resulting matrix
+    C11 = M1 + M4 - M5 + M7
+    C12 = M3 + M5
+    C21 = M2 + M4
+    C22 = M1 - M2 + M3 + M6
+
+    # Concatenate the quadrants
+    top = np.hstack((C11, C12))
+    bottom = np.hstack((C21, C22))
+    C = np.vstack((top, bottom))
+
+    # Crop the result back to the original dimensions
+    C = C[:original_shape[0], :original_shape[1]]
+
+    return C
+
+# Function to read a matrix from a CSV file
+def read_matrix_from_csv(file_path):
+    try:
+        df = pd.read_csv(file_path, header=None)
+        matrix = df.to_numpy()
+        return matrix
+    except Exception as e:
+        raise IOError(f"Failed to read matrix from CSV file: {file_path}. Error: {e}")
+
+# Main function
+def main():
+    # Read matrices from CSV files
+    matrix1 = read_matrix_from_csv("/content/matrix_a.csv")
+    matrix2 = read_matrix_from_csv("/content/matrix_a.csv")
+
+    print("Matrix 1:")
+    print(matrix1)
+    print("Matrix 2:")
+    print(matrix2)
+
+    # Perform Strassen's multiplication
+    result = strassen_multiply(matrix1, matrix2)
+    print("Result of Strassen's Matrix Multiplication:")
+    print(result)
+
+    # Verify the result using standard multiplication
+    expected = np.dot(matrix1, matrix2)
+    print("Expected Result using NumPy dot:")
+    print(expected)
+
+    # Check for correctness
+    if np.allclose(result, expected):
+        print("Strassen's multiplication is correct.")
+    else:
+        print("Strassen's multiplication is incorrect.")
+
+if __name__ == "__main__":
+    main()
+
+# Stop SparkContext
+if 'sc' in locals() and sc is not None:
+    sc.stop()
