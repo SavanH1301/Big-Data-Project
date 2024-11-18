@@ -1,146 +1,114 @@
-!pip install pyspark
-!spark-submit strassen_spark.py
-
-from pyspark import SparkContext
 import numpy as np
-import time
 
-sc = SparkContext.getOrCreate()
-
-# Helper function to divide matrix into sub-matrices
-def divide_matrix(mat, n):
-    half = n // 2
-    A11 = mat[:half, :half]
-    A12 = mat[:half, half:]
-    A21 = mat[half:, :half]
-    A22 = mat[half:, half:]
-    return A11, A12, A21, A22
-
-# Helper function for matrix addition
+# Helper functions for matrix addition and subtraction
 def matrix_addition(A, B):
     return A + B
 
-# Helper function for matrix subtraction
 def matrix_subtraction(A, B):
     return A - B
 
-# Base case multiplication (regular matrix multiplication for small matrices)
+# Regular matrix multiplication for base case
 def base_multiply(A, B):
     return np.dot(A, B)
 
-# Helper function to divide matrix into sub-matrices
-def divide_matrix(mat, n):
+# Strassen's matrix multiplication function
+def strassen(A, B):
+    original_n = A.shape[0]  # Store the original size
+    original_m = B.shape[1]  # Store the original size
+
+    n = A.shape[0]
+
+    # Base case: use regular multiplication for small matrices
+    if n <= 2:
+        return base_multiply(A, B)
+
+    # If n is not a power of 2, pad the matrices with zeros to make them a power of 2
+    next_power_of_2 = 2 ** int(np.ceil(np.log2(n)))
+    if n != next_power_of_2:
+        A_padded = np.zeros((next_power_of_2, next_power_of_2), dtype=A.dtype)
+        B_padded = np.zeros((next_power_of_2, next_power_of_2), dtype=B.dtype)
+        A_padded[:n, :n] = A
+        B_padded[:n, :n] = B
+        A, B = A_padded, B_padded
+        n = next_power_of_2
+
+    # Split matrices into quadrants
     half = n // 2
-    A11 = mat[:half, :half]
-    A12 = mat[:half, half:]
-    A21 = mat[half:, :half]
-    A22 = mat[half:, half:]
-    return A11, A12, A21, A22
+    A11, A12, A21, A22 = A[:half, :half], A[:half, half:], A[half:, :half], A[half:, half:]
+    B11, B12, B21, B22 = B[:half, :half], B[:half, half:], B[half:, :half], B[half:, half:]
 
-# Helper function for matrix addition
-def matrix_addition(A, B):
-    return A + B
+    # Strassen's 7 recursive steps
+    M1 = strassen(matrix_addition(A11, A22), matrix_addition(B11, B22))
+    M2 = strassen(matrix_addition(A21, A22), B11)
+    M3 = strassen(A11, matrix_subtraction(B12, B22))
+    M4 = strassen(A22, matrix_subtraction(B21, B11))
+    M5 = strassen(matrix_addition(A11, A12), B22)
+    M6 = strassen(matrix_subtraction(A21, A11), matrix_addition(B11, B12))
+    M7 = strassen(matrix_subtraction(A12, A22), matrix_addition(B21, B22))
 
-# Helper function for matrix subtraction
-def matrix_subtraction(A, B):
-    return A - B
-
-# Base case multiplication (regular matrix multiplication for small matrices)
-def base_multiply(A, B):
-    return np.dot(A, B)
-
-# Recursive Strassen function
-def dist_strassen(A_blocks, B_blocks, block_size):
-    # Unpack sub-matrices
-    if isinstance(A_blocks[0], np.ndarray) and A_blocks[0].ndim == 2:
-        # If A_blocks contains the actual matrix, divide it
-        A11, A12, A21, A22 = divide_matrix(A_blocks[0], A_blocks[0].shape[0])
-    else:
-        # If A_blocks is already a tuple of sub-matrices, unpack it
-        A11, A12, A21, A22 = A_blocks
-
-    if isinstance(B_blocks[0], np.ndarray) and B_blocks[0].ndim == 2:
-        # If B_blocks contains the actual matrix, divide it
-        B11, B12, B21, B22 = divide_matrix(B_blocks[0], B_blocks[0].shape[0])
-    else:
-        # If B_blocks is already a tuple of sub-matrices, unpack it
-        B11, B12, B21, B22 = B_blocks
-
-
-    if len(A11) <= block_size:
-        # Base case: use regular matrix multiplication
-        C11 = base_multiply(A11, B11) + base_multiply(A12, B21)
-        C12 = base_multiply(A11, B12) + base_multiply(A12, B22)
-        C21 = base_multiply(A21, B11) + base_multiply(A22, B21)
-        C22 = base_multiply(A21, B12) + base_multiply(A22, B22)
-        return np.block([[C11, C12], [C21, C22]])
-
-    # Compute M1 to M7 using Strassen’s formulas
-    M1 = dist_strassen(
-        (matrix_addition(A11, A22),), (matrix_addition(B11, B22),), block_size
-    )
-    M2 = dist_strassen(
-        (matrix_addition(A21, A22),), (B11,), block_size
-    )
-    M3 = dist_strassen(
-        (A11,), (matrix_subtraction(B12, B22),), block_size
-    )
-    M4 = dist_strassen(
-        (A22,), (matrix_subtraction(B21, B11),), block_size
-    )
-    M5 = dist_strassen(
-        (matrix_addition(A11, A12),), (B22,), block_size
-    )
-    M6 = dist_strassen(
-        (matrix_subtraction(A21, A11),), (matrix_addition(B11, B12),), block_size
-    )
-    M7 = dist_strassen(
-        (matrix_subtraction(A12, A22),), (matrix_addition(B21, B22),), block_size
-    )
-
-    # Combine results into final matrix blocks
-    C11 = matrix_addition(matrix_addition(M1, M4), matrix_subtraction(M7, M5))
+    # Calculate the submatrices of the result
+    C11 = matrix_addition(matrix_subtraction(matrix_addition(M1, M4), M5), M7)
     C12 = matrix_addition(M3, M5)
     C21 = matrix_addition(M2, M4)
-    C22 = matrix_addition(matrix_subtraction(M1, M2), matrix_addition(M3, M6))
+    C22 = matrix_addition(matrix_subtraction(matrix_addition(M1, M3), M2), M6)
 
-    # Return the combined matrix
-    return np.block([[C11, C12], [C21, C22]])
+    # Combine the submatrices into the result matrix
+    C = np.vstack((np.hstack((C11, C12)), np.hstack((C21, C22))))
 
-# Function to generate random matrices of size (n, n)
-def generate_random_matrix(n):
-    return np.random.randint(0, 100, size=(n, n))
+    # Crop the result back to the original dimensions of the input matrices
+    return C[:original_n, :original_m]
 
-# Main function
+# Main function to test the implementation
 def main():
-    n = 1024  # Size of input matrices (ensure it's a power of 2 for easy division)
-    block_size = 128  # Base case size for regular multiplication
+    # Define the matrices (10x10 as per your example)
+    A = np.array([
+        [225, 200, 165, 120, 165, 200, 225, 240, 245, 240],
+        [240, 225, 200, 165, 120, 165, 200, 225, 240, 245],
+        [245, 240, 225, 200, 165, 120, 165, 200, 225, 240],
+        [240, 245, 240, 225, 200, 165, 120, 165, 200, 225],
+        [225, 240, 245, 240, 225, 200, 165, 120, 165, 200],
+        [200, 225, 240, 245, 240, 225, 200, 165, 120, 165],
+        [165, 200, 225, 240, 245, 240, 225, 200, 165, 120],
+        [120, 156, 192, 218, 234, 240, 236, 222, 198, 164],
+        [165, 120, 165, 200, 225, 240, 245, 240, 225, 200],
+        [200, 165, 120, 165, 200, 225, 240, 245, 240, 225]
+    ])
 
-    # Generate random matrices A and B
-    A = generate_random_matrix(n)
-    B = generate_random_matrix(n)
+    B = np.array([
+        [225, 200, 165, 120, 165, 200, 225, 240, 245, 240],
+        [240, 225, 200, 165, 120, 165, 200, 225, 240, 245],
+        [245, 240, 225, 200, 165, 120, 165, 200, 225, 240],
+        [240, 245, 240, 225, 200, 165, 120, 165, 200, 225],
+        [225, 240, 245, 240, 225, 200, 165, 120, 165, 200],
+        [200, 225, 240, 245, 240, 225, 200, 165, 120, 165],
+        [165, 200, 225, 240, 245, 240, 225, 200, 165, 120],
+        [120, 156, 192, 218, 234, 240, 236, 222, 198, 164],
+        [165, 120, 165, 200, 225, 240, 245, 240, 225, 200],
+        [200, 165, 120, 165, 200, 225, 240, 245, 240, 225]
+    ])
 
-    # Convert matrices to RDDs
-    A_rdd = sc.parallelize([A])
-    B_rdd = sc.parallelize([B])
+    print("Matrix 1:")
+    print(A)
+    print("Matrix 2:")
+    print(B)
 
-    # Divide matrices into sub-blocks
-    A11, A12, A21, A22 = divide_matrix(A, n)
-    B11, B12, B21, B22 = divide_matrix(B, n)
+    # Perform Strassen’s matrix multiplication
+    result = strassen(A, B)
 
-    # Create RDDs of sub-matrices
-    A_blocks = (A11, A12, A21, A22)
-    B_blocks = (B11, B12, B21, B22)
-
-    # Perform distributed Strassen’s matrix multiplication
-    start = time.time()
-    result = dist_strassen(A_blocks, B_blocks, block_size)
-    end = time.time()
-
-    print(end-start)
-    # Print the result matrix
+    # Print the result
     print("Result of Strassen's Matrix Multiplication:")
     print(result)
+
+    # Verify the result using standard multiplication
+    expected = np.dot(A, B)
+    print("Expected Result using NumPy dot:")
+    print(expected)
+
+    # Check for correctness
+    if np.allclose(result, expected):
+        print("Strassen's multiplication is correct.")
+    else:
+        print("Strassen's multiplication is incorrect.")
 
 if __name__ == "__main__":
     main()
